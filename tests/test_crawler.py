@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch, call
 
 import requests as req
 
-from src.crawler import Page, _same_domain, _extract, crawl
+from src.crawler import Page, _normalise_url, _same_domain, _extract, crawl
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +22,54 @@ def _mock_response(html: str, status_code: int = 200) -> MagicMock:
     else:
         resp.raise_for_status.return_value = None
     return resp
+
+
+# ---------------------------------------------------------------------------
+# _normalise_url
+# ---------------------------------------------------------------------------
+
+class TestNormaliseUrl(unittest.TestCase):
+
+    def test_trailing_slash_stripped_from_path(self):
+        self.assertEqual(
+            _normalise_url("https://example.com/page/2/"),
+            "https://example.com/page/2",
+        )
+
+    def test_root_path_preserved(self):
+        # "/" must not become an empty path
+        self.assertEqual(
+            _normalise_url("https://example.com/"),
+            "https://example.com/",
+        )
+
+    def test_scheme_lowercased(self):
+        self.assertEqual(
+            _normalise_url("HTTPS://example.com/page"),
+            "https://example.com/page",
+        )
+
+    def test_host_lowercased(self):
+        self.assertEqual(
+            _normalise_url("https://EXAMPLE.COM/page"),
+            "https://example.com/page",
+        )
+
+    def test_fragment_stripped(self):
+        self.assertNotIn("#", _normalise_url("https://example.com/page#section"))
+
+    def test_query_stripped(self):
+        self.assertNotIn("?", _normalise_url("https://example.com/page?q=foo"))
+
+    def test_different_trailing_slash_variants_equal(self):
+        with_slash = _normalise_url("https://example.com/page/")
+        without_slash = _normalise_url("https://example.com/page")
+        self.assertEqual(with_slash, without_slash)
+
+    def test_different_host_case_variants_equal(self):
+        upper = _normalise_url("https://EXAMPLE.COM/page")
+        lower = _normalise_url("https://example.com/page")
+        self.assertEqual(upper, lower)
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +140,8 @@ class TestExtract(unittest.TestCase):
     def test_relative_links_resolved_to_absolute(self):
         html = '<html><body><a href="/page/2/">Next</a></body></html>'
         page = _extract("https://quotes.toscrape.com/", html)
-        self.assertIn("https://quotes.toscrape.com/page/2/", page.links)
+        # Trailing slash stripped by _normalise_url
+        self.assertIn("https://quotes.toscrape.com/page/2", page.links)
 
     def test_absolute_links_preserved(self):
         html = '<html><body><a href="https://example.com/about">About</a></body></html>'
@@ -102,7 +151,7 @@ class TestExtract(unittest.TestCase):
     def test_fragment_stripped_from_links(self):
         html = '<html><body><a href="/page/1/#section">Link</a></body></html>'
         page = _extract("https://quotes.toscrape.com/", html)
-        self.assertIn("https://quotes.toscrape.com/page/1/", page.links)
+        self.assertIn("https://quotes.toscrape.com/page/1", page.links)
         self.assertNotIn("#section", "".join(page.links))
 
     def test_query_string_stripped_from_links(self):
@@ -172,7 +221,7 @@ class TestCrawl(unittest.TestCase):
 
         urls = [p.url for p in pages]
         self.assertIn("https://quotes.toscrape.com/", urls)
-        self.assertIn("https://quotes.toscrape.com/page/2/", urls)
+        self.assertIn("https://quotes.toscrape.com/page/2", urls)
 
     @patch("src.crawler.time.sleep")
     @patch("src.crawler.requests.Session")
@@ -289,6 +338,54 @@ class TestCrawl(unittest.TestCase):
         session.headers.__setitem__.assert_any_call("User-Agent", unittest.mock.ANY)
         set_value = session.headers.__setitem__.call_args[0][1]
         self.assertIn("COMP3011", set_value)
+
+    @patch("src.crawler.time.sleep")
+    @patch("src.crawler.requests.Session")
+    def test_same_url_different_trailing_slash_not_fetched_twice(self, MockSession, mock_sleep):
+        # Both /page/2/ and /page/2 normalise to the same URL — only one fetch
+        html = """
+        <html><body>
+          <a href="/page/2/">With slash</a>
+          <a href="/page/2">Without slash</a>
+        </body></html>
+        """
+        session = MockSession.return_value
+        session.get.side_effect = [
+            _mock_response(html),
+            _mock_response("<html><body>Page 2</body></html>"),
+        ]
+
+        pages = crawl("https://quotes.toscrape.com/", politeness=0)
+
+        self.assertEqual(session.get.call_count, 2)
+
+    @patch("src.crawler.time.sleep")
+    @patch("src.crawler.requests.Session")
+    def test_url_linked_from_multiple_pages_fetched_only_once(self, MockSession, mock_sleep):
+        # /shared is linked from both /a and /b — should only be fetched once
+        root = """
+        <html><body>
+          <a href="/a">A</a>
+          <a href="/b">B</a>
+        </body></html>
+        """
+        page_a = '<html><body><a href="/shared">Shared</a></body></html>'
+        page_b = '<html><body><a href="/shared">Shared</a></body></html>'
+        page_shared = "<html><body>Shared content</body></html>"
+
+        session = MockSession.return_value
+        session.get.side_effect = [
+            _mock_response(root),
+            _mock_response(page_a),
+            _mock_response(page_b),
+            _mock_response(page_shared),
+        ]
+
+        pages = crawl("https://quotes.toscrape.com/", politeness=0)
+
+        fetched_urls = [call.args[0] for call in session.get.call_args_list]
+        shared_fetches = [u for u in fetched_urls if u.endswith("/shared")]
+        self.assertEqual(len(shared_fetches), 1)
 
 
 if __name__ == "__main__":

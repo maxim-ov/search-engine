@@ -20,8 +20,28 @@ class Page(NamedTuple):
     links: list[str]
 
 
+def _normalise_url(url: str) -> str:
+    """Return a canonical form of url for deduplication.
+
+    - Lowercases scheme and host (RFC 3986: these are case-insensitive)
+    - Strips query strings and fragments
+    - Removes trailing slashes from the path so /page/1 and /page/1/ are
+      the same key (the root path "/" is left unchanged)
+    """
+    p = urlparse(url)
+    path = p.path.rstrip("/") or "/"
+    normalised = p._replace(
+        scheme=p.scheme.lower(),
+        netloc=p.netloc.lower(),
+        path=path,
+        query="",
+        fragment="",
+    )
+    return normalised.geturl()
+
+
 def _same_domain(base: str, url: str) -> bool:
-    return urlparse(url).netloc == urlparse(base).netloc
+    return urlparse(url).netloc.lower() == urlparse(base).netloc.lower()
 
 
 def _extract(url: str, html: str) -> Page:
@@ -36,14 +56,15 @@ def _extract(url: str, html: str) -> Page:
     links = []
     for a in soup.find_all("a", href=True):
         absolute = urljoin(url, a["href"])
-        # Strip fragments and query strings to avoid duplicate pages
-        parsed = urlparse(absolute)._replace(fragment="", query="")
-        links.append(parsed.geturl())
+        links.append(_normalise_url(absolute))
 
     return Page(url=url, text=text, links=links)
 
 
-def crawl(start_url: str, politeness: float = POLITENESS_WINDOW) -> list[Page]:
+def crawl(
+    start_url: str,
+    politeness: float = POLITENESS_WINDOW,
+) -> list[Page]:
     """BFS crawl of start_url, staying within the same domain.
 
     Args:
@@ -53,7 +74,10 @@ def crawl(start_url: str, politeness: float = POLITENESS_WINDOW) -> list[Page]:
     Returns:
         List of Page objects for every successfully fetched page.
     """
-    visited: set[str] = set()
+    start_url = _normalise_url(start_url)
+    # `seen` covers both visited pages and URLs already queued, preventing
+    # the same URL from appearing in the frontier more than once.
+    seen: set[str] = {start_url}
     frontier: deque[str] = deque([start_url])
     pages: list[Page] = []
 
@@ -63,16 +87,12 @@ def crawl(start_url: str, politeness: float = POLITENESS_WINDOW) -> list[Page]:
     while frontier:
         url = frontier.popleft()
 
-        if url in visited:
-            continue
-        visited.add(url)
-
         try:
-            logger.info("Fetching %s", url)
+            print(f"  [{len(pages) + 1}] {url}")
             response = session.get(url, timeout=10)
             response.raise_for_status()
         except requests.RequestException as exc:
-            logger.warning("Skipping %s — %s", url, exc)
+            print(f"  Skipping {url} — {exc}")
             time.sleep(politeness)
             continue
 
@@ -80,7 +100,8 @@ def crawl(start_url: str, politeness: float = POLITENESS_WINDOW) -> list[Page]:
         pages.append(page)
 
         for link in page.links:
-            if link not in visited and _same_domain(start_url, link):
+            if link not in seen and _same_domain(start_url, link):
+                seen.add(link)
                 frontier.append(link)
 
         time.sleep(politeness)
