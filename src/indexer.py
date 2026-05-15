@@ -31,7 +31,7 @@ def build(pages: list[Page]) -> dict:
     The returned dict has two top-level keys:
 
     - ``index``: maps each token to a dict of {url: {frequency, positions}}
-    - ``pages``: maps each url to {title, snippet}
+    - ``pages``: maps each url to {title, snippet, token_count}
 
     Args:
         pages: Pages returned by the crawler.
@@ -54,7 +54,11 @@ def build(pages: list[Page]) -> dict:
 
         title = page.text.split("\n")[0][:80].strip()
         snippet = page.text[:SNIPPET_LENGTH].strip()
-        page_meta[page.url] = {"title": title, "snippet": snippet}
+        page_meta[page.url] = {
+            "title": title,
+            "snippet": snippet,
+            "token_count": len(tokens),
+        }
 
     logger.info("Indexed %d tokens across %d pages", len(index), len(pages))
     return {"index": index, "pages": page_meta}

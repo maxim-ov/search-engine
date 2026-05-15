@@ -131,6 +131,17 @@ class TestBuild(unittest.TestCase):
         meta = result["pages"]["https://example.com/"]
         self.assertIn("title", meta)
         self.assertIn("snippet", meta)
+        self.assertIn("token_count", meta)
+
+    def test_token_count_stored(self):
+        pages = [_page("https://example.com/", "hello world foo")]
+        result = build(pages)
+        self.assertEqual(result["pages"]["https://example.com/"]["token_count"], 3)
+
+    def test_token_count_zero_for_empty_text(self):
+        pages = [_page("https://example.com/", "")]
+        result = build(pages)
+        self.assertEqual(result["pages"]["https://example.com/"]["token_count"], 0)
 
     def test_snippet_content(self):
         pages = [_page("https://example.com/", "Hello world")]

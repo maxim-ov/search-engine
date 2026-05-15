@@ -1,5 +1,6 @@
 """Unit tests for src/search.py."""
 
+import math
 import unittest
 
 from src.search import Search, SearchResult
@@ -11,9 +12,9 @@ from src.search import Search, SearchResult
 
 # Hand-crafted index_data that mirrors what indexer.build() produces.
 # Page layout (tokens):
-#   /1  → "good friends good"   → good×2 @[0,2], friends×1 @[1]
-#   /2  → "good life"           → good×1 @[0],   life×1 @[1]
-#   /3  → "life friends"        → life×1 @[0],   friends×1 @[1]
+#   /1  → "good friends good"   (3 tokens) → good×2 @[0,2], friends×1 @[1]
+#   /2  → "good life"           (2 tokens) → good×1 @[0],   life×1 @[1]
+#   /3  → "life friends"        (2 tokens) → life×1 @[0],   friends×1 @[1]
 
 FIXTURE: dict = {
     "index": {
@@ -31,11 +32,31 @@ FIXTURE: dict = {
         },
     },
     "pages": {
-        "https://example.com/1": {"title": "Page One", "snippet": "good friends good"},
-        "https://example.com/2": {"title": "Page Two", "snippet": "good life"},
-        "https://example.com/3": {"title": "Page Three", "snippet": "life friends"},
+        "https://example.com/1": {"title": "Page One",   "snippet": "good friends good", "token_count": 3},
+        "https://example.com/2": {"title": "Page Two",   "snippet": "good life",         "token_count": 2},
+        "https://example.com/3": {"title": "Page Three", "snippet": "life friends",      "token_count": 2},
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Expected TF-IDF values derived from FIXTURE (used in score assertions)
+# ---------------------------------------------------------------------------
+# N = 3 pages
+# "good"    df=2  → IDF = log(3/2)
+# "friends" df=2  → IDF = log(3/2)
+# "life"    df=2  → IDF = log(3/2)
+#
+# tfidf("good",    /1) = (2/3) * log(3/2)
+# tfidf("good",    /2) = (1/2) * log(3/2)
+# tfidf("friends", /1) = (1/3) * log(3/2)
+
+_IDF_GOOD    = math.log(3 / 2)
+_IDF_FRIENDS = math.log(3 / 2)
+
+_SCORE_GOOD_PAGE1    = (2 / 3) * _IDF_GOOD
+_SCORE_GOOD_PAGE2    = (1 / 2) * _IDF_GOOD
+_SCORE_GOODFRIENDS_PAGE1 = _SCORE_GOOD_PAGE1 + (1 / 3) * _IDF_FRIENDS
 
 
 def _search() -> Search:
@@ -116,6 +137,10 @@ class TestFind(unittest.TestCase):
         self.assertTrue(hasattr(result, "snippet"))
         self.assertTrue(hasattr(result, "score"))
 
+    def test_score_is_float(self):
+        result = _search().find(["good"])[0]
+        self.assertIsInstance(result.score, float)
+
     # --- single-term queries ---
 
     def test_single_term_returns_all_matching_pages(self):
@@ -151,10 +176,9 @@ class TestFind(unittest.TestCase):
         self.assertEqual(results[0].url, "https://example.com/1")
         self.assertEqual(results[1].url, "https://example.com/2")
 
-    def test_score_is_sum_of_term_frequencies(self):
-        # /1: good×2 + friends×1 = 3
+    def test_score_is_tfidf(self):
         results = _search().find(["good", "friends"])
-        self.assertEqual(results[0].score, 3)
+        self.assertAlmostEqual(results[0].score, _SCORE_GOODFRIENDS_PAGE1, places=10)
 
     def test_higher_frequency_page_ranks_first(self):
         results = _search().find(["good"])

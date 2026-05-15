@@ -1,6 +1,7 @@
 """Query logic: print and find commands."""
 
 import logging
+import math
 from dataclasses import dataclass
 
 from src.indexer import tokenise
@@ -13,7 +14,7 @@ class SearchResult:
     url: str
     title: str
     snippet: str
-    score: int  # sum of term frequencies across all query terms
+    score: float  # sum of TF-IDF scores across all query terms
 
 
 class Search:
@@ -48,14 +49,35 @@ class Search:
             lines.append(f"  {url}  frequency={freq}  positions={positions}")
         return "\n".join(lines)
 
+    def _tfidf(self, token: str, url: str) -> float:
+        """Compute the TF-IDF score for a single token in a single document.
+
+        TF  = frequency(token, doc) / token_count(doc)
+        IDF = log( N / df(token) )   where N = corpus size, df = document frequency
+        """
+        postings = self._index.get(token, {})
+        if url not in postings:
+            return 0.0
+
+        tf = postings[url]["frequency"] / max(
+            self._pages[url].get("token_count", 1), 1
+        )
+        n_docs = len(self._pages)
+        df = len(postings)
+        idf = math.log(n_docs / df) if df else 0.0
+        return tf * idf
+
     def find(self, terms: list[str]) -> list[SearchResult]:
-        """Find pages containing all query terms, ranked by total frequency.
+        """Find pages containing all query terms, ranked by TF-IDF score.
+
+        TF-IDF rewards terms that appear frequently in a page but rarely
+        across the corpus, giving more meaningful rankings than raw frequency.
 
         Args:
             terms: Raw query terms (case-insensitive, punctuation ignored).
 
         Returns:
-            List of SearchResult ordered by descending relevance score.
+            List of SearchResult ordered by descending TF-IDF score.
             Empty list if no terms are indexable or no pages match all terms.
         """
         tokens = [t for term in terms for t in tokenise(term)]
@@ -77,11 +99,7 @@ class Search:
 
         results = []
         for url in matching_urls:
-            score = sum(
-                self._index[token][url]["frequency"]
-                for token in tokens
-                if url in self._index.get(token, {})
-            )
+            score = sum(self._tfidf(token, url) for token in tokens)
             meta = self._pages.get(url, {})
             results.append(SearchResult(
                 url=url,

@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-POLITENESS_WINDOW = 6  # seconds between requests
+POLITENESS_WINDOW = 3  # seconds between requests
 
 
 class Page(NamedTuple):
